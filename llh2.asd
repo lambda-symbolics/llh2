@@ -14,7 +14,9 @@
                               (:file "octets")
                               (:file "hpack-tables")
                               (:file "hpack")
-                              (:file "frames"))))
+                              (:file "frames")
+                              (:file "stream")
+                              (:file "connection"))))
   :in-order-to ((asdf:test-op (asdf:test-op #:llh2/tests))))
 
 (asdf:defsystem #:llh2/tests
@@ -28,6 +30,7 @@
                  :components ((:file "test-support")
                               (:file "hpack-tests")
                               (:file "frame-tests")
+                              (:file "connection-tests")
                               (:file "tests"))))
   :perform     (asdf:test-op (operation component)
                  (declare (ignore operation component))
