@@ -1,0 +1,122 @@
+#+title: llh2
+
+llh2 is HTTP/2 for Common Lisp over cleartext octet streams. It covers the
+frame layer and connection management of RFC 9113, the HPACK header
+compression of RFC 7541, and flow control in both directions, for servers and
+clients. It reads and writes any bidirectional octet stream, such as a TCP
+socket stream. It has no TLS: put a reverse proxy in front of a server that
+needs it.
+
+A server accepts the client preface directly ("prior knowledge"), after the
+caller read its first line, or after an HTTP/1.1 =Upgrade: h2c= that the
+caller answered. A client always speaks with prior knowledge. Server push and
+stream priorities are not implemented; llh2 disables push and ignores
+priority signals, as RFC 9113 allows.
+
+* Systems and package
+
+- ASDF system: =llh2=
+- Test system: =llh2/tests=
+- Package: =LLH2=
+
+Install the locked dependencies and run all tests:
+
+#+begin_src sh
+./script/bootstrap
+./script/check
+#+end_src
+
+* Serving
+
+Make a connection for each accepted socket and serve it in its own thread:
+
+#+begin_src lisp
+(defun handle (stream)
+  (if (string= (llh2:h2-stream-path stream) "/echo")
+      (llh2:h2-stream-respond stream 200 :body (llh2:h2-stream-read-body stream :limit 1048576))
+      (llh2:h2-stream-respond stream 404)))
+
+(let ((socket (usocket:socket-accept listener :element-type '(unsigned-byte 8))))
+  (llh2:h2-connection-serve
+   (llh2:make-h2-server-connection
+    (usocket:socket-stream socket)
+    :handler           #'handle
+    :shutdown-function (lambda () (usocket:socket-shutdown socket :io)))))
+#+end_src
+
+=H2-CONNECTION-SERVE= reads frames in the calling thread until the client
+leaves, then closes the stream. Each request runs the handler in a new
+thread with an =H2-STREAM=. The handler reads the request with
+=H2-STREAM-METHOD=, =H2-STREAM-PATH=, =H2-STREAM-AUTHORITY=,
+=H2-STREAM-HEADER=, =H2-STREAM-READ-DATA=, and =H2-STREAM-READ-BODY=, and
+answers with =H2-STREAM-RESPOND=, or with =H2-STREAM-SEND-HEADERS= followed
+by any number of =H2-STREAM-WRITE-DATA= calls and =H2-STREAM-FINISH= for a
+streamed response such as Server-Sent Events. A handler that returns without
+finishing its response has the stream finished for it; one that fails or
+never responds has the stream reset with =:INTERNAL-ERROR=.
+
+The connection owns the octet stream. Closing a socket stream from one thread
+does not wake another thread blocked reading it, so pass a
+=:SHUTDOWN-FUNCTION= that shuts the socket down; the connection calls it when
+it ends, and closes the stream once its reader stops.
+
+When the caller parsed the first line of the preface, =PRI * HTTP/2.0=, and
+the blank line after it, pass =:PREFACE :AFTER-REQUEST-LINE=. For an h2c
+upgrade, send the =101 Switching Protocols= response first, then pass the
+request to =H2-CONNECTION-SERVE= as =:UPGRADE-HEADERS= (HTTP/2 fields with
+pseudo-headers), =:UPGRADE-BODY=, and =:UPGRADE-SETTINGS= (the value of
+=HTTP2-Settings=). The request becomes stream 1.
+
+* Requesting
+
+#+begin_src lisp
+(let* ((socket     (usocket:socket-connect "127.0.0.1" 8080 :element-type '(unsigned-byte 8)))
+       (connection (llh2:make-h2-client-connection
+                    (usocket:socket-stream socket)
+                    :shutdown-function (lambda () (usocket:socket-shutdown socket :io)))))
+  (unwind-protect
+       (let ((stream (llh2:h2-request connection :method    "POST"
+                                                 :path      "/echo"
+                                                 :authority "127.0.0.1:8080"
+                                                 :body      octets)))
+         (llh2:h2-stream-wait-headers stream :timeout 10)
+         (values (llh2:h2-stream-status stream)
+                 (llh2:h2-stream-read-body stream)))
+    (llh2:h2-connection-close connection)))
+#+end_src
+
+A client connection reads frames in its own thread. =H2-REQUEST= sends a
+request with an optional body; =H2-OPEN-STREAM= sends request headers and
+leaves the body to =H2-STREAM-WRITE-DATA=. Both wait while the server's
+concurrent stream limit is reached. =H2-STREAM-WAIT-HEADERS= returns the
+final response fields and skips interim 1xx responses.
+
+* Flow control and limits
+
+Writes wait for flow-control credit, so a slow reader slows its writer
+instead of filling memory. Reading data opens the stream's window again. The
+connection window is 16 MiB and each stream window 1 MiB; change
+=*H2-DEFAULT-SETTINGS*= or pass =:SETTINGS= to a constructor to announce
+other values. Decoded header lists are limited by
+=:MAX-HEADER-LIST-SIZE=, compressed header blocks by
+=*H2-MAXIMUM-HEADER-BLOCK*=, and frames by =:MAX-FRAME-SIZE=.
+
+* Errors
+
+All failures are =H2-ERROR= conditions with an error code keyword from
+RFC 9113, such as =:PROTOCOL-ERROR=, read with =H2-ERROR-CODE=.
+
+- =H2-CONNECTION-ERROR= ends the connection with GOAWAY. =HPACK-ERROR= is
+  one.
+- =H2-STREAM-ERROR= ends one stream with RST_STREAM.
+- =H2-STREAM-CLOSED= reaches the application when it reads or writes a
+  stream that was reset or lost its connection. =H2-STREAM-RESET-CODE= tells
+  why a stream was reset.
+
+* Header compression
+
+=HPACK-ENCODE= and =HPACK-DECODE= work alone too. The encoder never adds
+entries to its dynamic table and announces a table size of zero; it uses the
+static table, Huffman coding when that is shorter, and the never-indexed form
+for =authorization=, =cookie=, =proxy-authorization=, and =set-cookie=. The
+decoder handles every representation, including dynamic table updates.
