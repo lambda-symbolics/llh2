@@ -1,0 +1,5 @@
+ql bordeaux-threads 2026-01-01
+ql cl-base64 2026-01-01
+ql serapeum 2026-01-01
+ql usocket 2026-01-01
+git ls-compat https://github.com/lambda-symbolics/ls-compat.git :ref f3eaf96a8f80120423b5a31055984f9aa688566b
