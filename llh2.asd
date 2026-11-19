@@ -1,5 +1,5 @@
 (asdf:defsystem #:llh2
-  :description "HTTP/2 over cleartext streams: frames, HPACK, flow control, and h2c."
+  :description "A library implementing HTTP/2 over cleartext streams: frames, HPACK, flow control, and h2c."
   :author      "Lambda Symbolics OÜ"
   :license     "COLL-Attribution"
   :version     "0.1.0"
